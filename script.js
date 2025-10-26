@@ -970,6 +970,13 @@ const App = {
     showAudioStatus(message) {
         const status = document.getElementById('audio-status');
         const text = document.getElementById('audio-status-text');
+        
+        // Check if elements exist (might not be in HTML)
+        if (!status || !text) {
+            console.log(`🔊 ${message}`);
+            return;
+        }
+        
         text.textContent = `🔊 ${message}`;
         status.classList.add('visible');
         
