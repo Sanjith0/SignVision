@@ -1,47 +1,16 @@
 {
-  "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/index.py",
-      "use": "@vercel/python"
+      "source": "/analyze",
+      "destination": "/api/index"
     },
     {
-      "src": "index.html",
-      "use": "@vercel/static"
+      "source": "/models",
+      "destination": "/api/index"
     },
     {
-      "src": "*.js",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "*.css",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "*.json",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/analyze",
-      "dest": "api/index.py"
-    },
-    {
-      "src": "/models",
-      "dest": "api/index.py"
-    },
-    {
-      "src": "/analyze-fallback",
-      "dest": "api/index.py"
-    },
-    {
-      "src": "/(script\\.js|style\\.css|manifest\\.json|sw\\.js)",
-      "dest": "/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/analyze-fallback",
+      "destination": "/api/index"
     }
   ]
 }
