@@ -761,7 +761,6 @@ const App = {
             item.className = 'detection-item';
             item.innerHTML = `
                 <span class="label">${detection.label}</span>
-                <span class="confidence">${(detection.confidence * 100).toFixed(0)}%</span>
             `;
             list.appendChild(item);
         });
