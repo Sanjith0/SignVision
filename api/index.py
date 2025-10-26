@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from google import genai
+from mangum import Mangum
 import os
 import logging
 from datetime import datetime
@@ -272,7 +273,6 @@ async def analyze_fallback(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Vercel serverless function handler
-from mangum import Mangum
-handler = Mangum(app)
+# Vercel serverless function handler - must be at module level
+handler = Mangum(app, lifespan="off")
 
