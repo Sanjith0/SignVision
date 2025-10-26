@@ -11,7 +11,7 @@ google-genai>=1.21.1,<2.0.0
 python-dotenv==1.0.1
 
 # HTTP Client
-httpx==0.26.0
+httpx>=0.28.1
 
 # CORS Support
 python-multipart>=0.0.18
