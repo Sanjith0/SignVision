@@ -106,7 +106,7 @@ const App = {
         'obstacle': 'hazard',
         'danger': 'hazard',
         'warning': 'hazard'
-    }
+    },
     
     // Camera motion tracking
     gyroData: { alpha: 0, beta: 0, gamma: 0 },
@@ -129,7 +129,23 @@ const App = {
         // Initialize Speech Synthesis API
         if ('speechSynthesis' in window) {
             this.speechSynth = window.speechSynthesis;
-            console.log('Speech synthesis initialized');
+            console.log('✅ Speech synthesis API available');
+            console.log('Voice enabled:', this.config.enableVoice);
+            
+            // List available voices
+            const loadVoices = () => {
+                const voices = this.speechSynth.getVoices();
+                console.log(`Found ${voices.length} voices:`, voices.slice(0, 3).map(v => v.name));
+            };
+            
+            // Voices may load asynchronously
+            if (this.speechSynth.getVoices().length > 0) {
+                loadVoices();
+            } else {
+                this.speechSynth.onvoiceschanged = loadVoices;
+            }
+        } else {
+            console.warn('⚠️ Speech synthesis NOT available in this browser');
         }
         
         // Initialize IndexedDB for dashcam storage
@@ -808,10 +824,23 @@ const App = {
      * Announce newly locked objects (called once per object when it stabilizes)
      */
     announceLockedObjects(lockedObjects) {
-        if (!this.config.enableVoice || lockedObjects.length === 0) return;
+        console.log(`📢 announceLockedObjects called with ${lockedObjects.length} objects`);
+        console.log('Voice enabled:', this.config.enableVoice);
+        console.log('Speech synth available:', !!this.speechSynth);
+        
+        if (!this.config.enableVoice) {
+            console.warn('⚠️ Voice is disabled in config');
+            return;
+        }
+        
+        if (lockedObjects.length === 0) {
+            console.log('No objects to announce');
+            return;
+        }
         
         // Announce up to 3 objects at once (to avoid long announcements)
         const objectsToAnnounce = lockedObjects.slice(0, 3);
+        console.log('Objects to announce:', objectsToAnnounce.map(o => o.label));
         
         // Build announcement message
         const labels = objectsToAnnounce.map(obj => this.getFeedbackMessage(obj.label));
@@ -825,11 +854,14 @@ const App = {
             message = labels.join(', ');
         }
         
+        console.log(`🔊 Speaking: "${message}"`);
+        
         // Try multiple audio methods
         this.speakMessage(message);
         
         // Vibrate for haptic feedback (if supported)
         if ('vibrate' in navigator) {
+            console.log('📳 Vibrating...');
             navigator.vibrate([200, 100, 200]); // Pattern: vibrate, pause, vibrate
         }
         
@@ -837,8 +869,6 @@ const App = {
         objectsToAnnounce.forEach(obj => {
             obj.audioAnnounced = true;
         });
-        
-        console.log(`🔊 Announced: ${message}`);
     },
     
     /**
