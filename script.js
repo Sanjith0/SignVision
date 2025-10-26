@@ -58,6 +58,50 @@ const App = {
     minConfidence: 0.25, // Minimum confidence to create new tracked object
     maxMissedFrames: 10, // Maximum frames to predict without detection
     
+    // Label normalization map - groups similar labels together for stability
+    labelMap: {
+        // Walking/crossing signs
+        'walk': 'walk_sign',
+        'walk_sign': 'walk_sign',
+        'walking': 'walk_sign',
+        'pedestrian_crossing': 'walk_sign',
+        'crosswalk_signal': 'walk_sign',
+        'walk_signal': 'walk_sign',
+        'green_walk': 'walk_sign',
+        
+        // Don't walk signs
+        'no_walk': 'no_walk',
+        'dont_walk': 'no_walk',
+        'do_not_walk': 'no_walk',
+        'hand': 'no_walk',
+        'stop_hand': 'no_walk',
+        'red_hand': 'no_walk',
+        
+        // Crosswalk markings
+        'crosswalk': 'crosswalk',
+        'zebra_crossing': 'crosswalk',
+        'pedestrian_crossing_marking': 'crosswalk',
+        'crossing': 'crosswalk',
+        
+        // Stop signs
+        'stop': 'stop_sign',
+        'stop_sign': 'stop_sign',
+        
+        // Traffic lights
+        'traffic_light': 'traffic_light',
+        'traffic_signal': 'traffic_light',
+        'stoplight': 'traffic_light',
+        'red_light': 'traffic_light_red',
+        'green_light': 'traffic_light_green',
+        'yellow_light': 'traffic_light_yellow',
+        
+        // Hazards
+        'hazard': 'hazard',
+        'obstacle': 'hazard',
+        'danger': 'hazard',
+        'warning': 'hazard'
+    }
+    
     // Camera motion tracking
     gyroData: { alpha: 0, beta: 0, gamma: 0 },
     accelData: { x: 0, y: 0, z: 0 },
@@ -405,6 +449,41 @@ const App = {
     },
     
     /**
+     * Normalize detection labels for stability
+     * Maps similar labels (e.g., "walk", "pedestrian_crossing") to canonical names
+     */
+    normalizeLabel(label) {
+        const normalized = label.toLowerCase()
+            .replace(/\s+/g, '_')
+            .replace(/-/g, '_')
+            .trim();
+        
+        // Check exact match first
+        if (this.labelMap[normalized]) {
+            return this.labelMap[normalized];
+        }
+        
+        // Check if any key is contained in the label
+        for (const [key, value] of Object.entries(this.labelMap)) {
+            if (normalized.includes(key) || key.includes(normalized)) {
+                return value;
+            }
+        }
+        
+        // Return normalized version if no mapping found
+        return normalized;
+    },
+    
+    /**
+     * Check if two labels are similar enough to be considered the same
+     */
+    labelsAreSimilar(label1, label2) {
+        const norm1 = this.normalizeLabel(label1);
+        const norm2 = this.normalizeLabel(label2);
+        return norm1 === norm2;
+    },
+    
+    /**
      * Update tracked objects with advanced AR tracking (Google Lens style)
      * Includes motion prediction, camera compensation, and persistent tracking
      */
@@ -434,13 +513,17 @@ const App = {
             // Skip very low confidence
             if (detection.confidence < this.minConfidence) return;
             
+            // Normalize the detection label for consistent matching
+            const normalizedDetectionLabel = this.normalizeLabel(detection.label);
+            
             let bestMatch = null;
             let bestScore = 0;
             
             // Find best match using multiple criteria
             this.trackedObjects.forEach(trackedObj => {
                 if (trackedObj.matched) return;
-                if (trackedObj.label !== detection.label) return;
+                // Use normalized label comparison instead of exact match
+                if (!this.labelsAreSimilar(trackedObj.label, detection.label)) return;
                 
                 // Calculate IoU with predicted position (better for moving objects)
                 const iouPredicted = this.calculateIoU(detection.bbox, trackedObj.predictedBbox);
@@ -464,7 +547,26 @@ const App = {
                 bestMatch.matched = true;
                 bestMatch.missedFrames = 0;
                 bestMatch.lastSeen = currentTime;
-                bestMatch.confidence = detection.confidence;
+                
+                // Label stability: Only update label if new confidence is significantly higher
+                // This prevents flickering between similar labels
+                const newConfidence = detection.confidence;
+                const confidenceDiff = newConfidence - bestMatch.confidence;
+                
+                if (confidenceDiff > 0.15 || !bestMatch.labelLocked) {
+                    // Update label only if much more confident or label not locked yet
+                    bestMatch.label = this.normalizeLabel(detection.label);
+                    bestMatch.confidence = newConfidence;
+                    
+                    // Lock label after 5 consistent detections
+                    bestMatch.consistentDetections = (bestMatch.consistentDetections || 0) + 1;
+                    if (bestMatch.consistentDetections >= 5) {
+                        bestMatch.labelLocked = true;
+                    }
+                } else {
+                    // Keep existing label but update confidence slightly
+                    bestMatch.confidence = bestMatch.confidence * 0.8 + newConfidence * 0.2;
+                }
                 
                 // Calculate velocity with decay
                 const newVelocity = this.calculateVelocity(bestMatch.bbox, detection.bbox);
@@ -501,7 +603,7 @@ const App = {
             const id = this.nextObjectId++;
             this.trackedObjects.set(id, {
                 id: id,
-                label: detection.label,
+                label: this.normalizeLabel(detection.label), // Use normalized label
                 bbox: detection.bbox,
                 smoothedBbox: detection.bbox,
                 predictedBbox: detection.bbox,
@@ -510,7 +612,9 @@ const App = {
                 lastSeen: currentTime,
                 velocity: [0, 0, 0, 0],
                 missedFrames: 0,
-                matched: true
+                matched: true,
+                consistentDetections: 1, // Start counting for label locking
+                labelLocked: false // Label not locked yet
             });
         });
         
