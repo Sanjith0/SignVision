@@ -1,0 +1,36 @@
+╔══════════════════════════════════════════════════════════════╗
+║           SignVision - Ngrok Backend Setup                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ BACKEND SERVER
+   Status: Running
+   Local:  http://localhost:8000
+   
+✅ NGROK TUNNEL (BACKEND)
+   URL: https://overtame-holophrastic-arnoldo.ngrok-free.dev
+   
+📱 FOR IPHONE ACCESS:
+
+1. Open the app in your browser (from your frontend ngrok URL on port 8080)
+
+2. Click the Settings button (⚙️)
+
+3. In "API Endpoint", change to:
+   https://overtame-holophrastic-arnoldo.ngrok-free.dev/analyze
+
+4. Click "Start Detection"
+
+✅ CURRENT MODEL:
+   Gemini 2.0 Flash (Vision-capable model)
+
+🔗 NGROK WEB INTERFACE:
+   http://127.0.0.1:4040
+   (View requests, logs, etc.)
+
+📋 TO TEST THE ENDPOINT:
+   curl https://overtame-holophrastic-arnoldo.ngrok-free.dev/
+
+Notes:
+- Ngrok URL changes each time you restart ngrok
+- Update the API endpoint in the app settings if you restart
+

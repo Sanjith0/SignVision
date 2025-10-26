@@ -1,0 +1,21 @@
+# SignVision Backend Dependencies
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+
+# AI/ML Framework - NEW Google GenAI SDK
+google-genai>=1.21.1,<2.0.0
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# HTTP Client
+httpx==0.26.0
+
+# CORS Support
+python-multipart>=0.0.18
+
+# Image Processing
+Pillow==10.2.0
+
