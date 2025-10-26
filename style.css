@@ -98,7 +98,7 @@ html, body {
     position: absolute;
     top: 0;
     left: 0;
-    transform: scaleX(-1); /* Mirror for front-facing feel */
+    /* No mirroring - display normally */
 }
 
 #overlay {
@@ -108,7 +108,7 @@ html, body {
     width: 100vw;
     height: 100%;
     pointer-events: none;
-    transform: scaleX(-1); /* Mirror to match video */
+    /* No mirroring - matches video */
 }
 
 #capture {
