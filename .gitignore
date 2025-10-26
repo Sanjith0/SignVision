@@ -50,3 +50,7 @@ recordings/
 *.webm
 *.mp4
 
+# Vercel
+.vercel
+.vercel_build_output/
+

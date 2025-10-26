@@ -16,12 +16,18 @@ const App = {
     isRecording: false,
     
     // Configuration
-    // IMPORTANT: When using ngrok, update this to your backend ngrok URL!
-    // For local testing: http://localhost:8000/analyze
-    // For iPhone on same network: http://YOUR_MAC_IP:8000/analyze (e.g., http://10.56.180.95:8000/analyze)
-    // For ngrok: https://your-backend-ngrok-url.ngrok.io/analyze
+    // Auto-detects API endpoint based on environment
+    // In production (same domain): uses relative URL '/analyze'
+    // In development (localhost or custom): uses configured endpoint
     config: {
-        apiEndpoint: 'http://localhost:8000/analyze', // CHANGE THIS if using ngrok!
+        apiEndpoint: (() => {
+            // If running on localhost, use localhost:8000
+            if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                return 'http://localhost:8000/analyze';
+            }
+            // Otherwise, use relative URL (same server in production)
+            return '/analyze';
+        })(),
         processingInterval: 1000, // ms between frame captures
         enableVoice: true,
         detectionSensitivity: 5,

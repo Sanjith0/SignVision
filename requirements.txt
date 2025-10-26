@@ -19,3 +19,6 @@ python-multipart>=0.0.18
 # Image Processing
 Pillow==10.2.0
 
+# Vercel Serverless Support (ASGI to AWS Lambda/Vercel adapter)
+mangum>=0.17.0
+
