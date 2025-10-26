@@ -4,6 +4,22 @@
     {
       "src": "api/index.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "*.js",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "*.css",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "*.json",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
@@ -20,7 +36,7 @@
       "dest": "api/index.py"
     },
     {
-      "src": "/(.*\\.(js|css|json|html|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot))",
+      "src": "/(script\\.js|style\\.css|manifest\\.json|sw\\.js)",
       "dest": "/$1"
     },
     {
