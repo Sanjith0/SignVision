@@ -28,7 +28,7 @@ const App = {
             // Otherwise, use relative URL (same server in production)
             return '/analyze';
         })(),
-        processingInterval: 300, // ms between frame captures (faster detection - 3.3 FPS)
+        processingInterval: 150, // ms between frame captures (6.6 FPS - very fast!)
         enableVoice: true,
         detectionSensitivity: 5,
         maxFPS: 15,
@@ -49,13 +49,21 @@ const App = {
     lastDetections: [],
     deviceMotionData: null,
     
-    // AR Object Tracking - labels stick to objects in 3D space
-    trackedObjects: new Map(), // Map<id, {id, label, bbox, smoothedBbox, color, confidence, lastSeen, velocity}>
+    // AR Object Tracking - labels stick to objects in 3D space (Google Lens style)
+    trackedObjects: new Map(), // Map<id, {id, label, bbox, smoothedBbox, color, confidence, lastSeen, velocity, predictedBbox, missedFrames}>
     nextObjectId: 0,
-    trackingThreshold: 0.25, // IoU threshold for matching (lower = more lenient)
-    smoothingFactor: 0.35, // Position smoothing (0.1 = very smooth, 0.5 = responsive)
-    maxTrackingAge: 1000, // Keep objects visible for 1 second without detection
-    minConfidence: 0.3, // Minimum confidence to create new tracked object
+    trackingThreshold: 0.15, // IoU threshold for matching (very lenient for better tracking)
+    smoothingFactor: 0.25, // Position smoothing (lower = smoother, more stuck)
+    maxTrackingAge: 2000, // Keep objects visible for 2 seconds without detection (like Google Lens)
+    minConfidence: 0.25, // Minimum confidence to create new tracked object
+    maxMissedFrames: 10, // Maximum frames to predict without detection
+    
+    // Camera motion tracking
+    gyroData: { alpha: 0, beta: 0, gamma: 0 },
+    accelData: { x: 0, y: 0, z: 0 },
+    lastGyro: null,
+    lastAccel: null,
+    cameraMotion: { dx: 0, dy: 0 }, // Estimated camera movement
     
     // Service references
     storage: null,
@@ -83,7 +91,47 @@ const App = {
         // Request camera permission on load
         this.requestCameraPermission();
         
+        // Setup device motion sensors for camera tracking
+        this.setupMotionSensors();
+        
         console.log('SignVision initialized');
+    },
+    
+    /**
+     * Setup device motion sensors for better AR tracking
+     */
+    setupMotionSensors() {
+        if (window.DeviceOrientationEvent) {
+            window.addEventListener('deviceorientation', (e) => {
+                const newGyro = { alpha: e.alpha || 0, beta: e.beta || 0, gamma: e.gamma || 0 };
+                
+                if (this.lastGyro) {
+                    // Calculate camera rotation
+                    const dAlpha = newGyro.alpha - this.lastGyro.alpha;
+                    const dBeta = newGyro.beta - this.lastGyro.beta;
+                    const dGamma = newGyro.gamma - this.lastGyro.gamma;
+                    
+                    // Estimate camera motion from rotation
+                    this.cameraMotion.dx = dGamma * 0.01; // Horizontal movement
+                    this.cameraMotion.dy = dBeta * 0.01;  // Vertical movement
+                }
+                
+                this.gyroData = newGyro;
+                this.lastGyro = newGyro;
+            });
+        }
+        
+        if (window.DeviceMotionEvent) {
+            window.addEventListener('devicemotion', (e) => {
+                if (e.acceleration) {
+                    this.accelData = {
+                        x: e.acceleration.x || 0,
+                        y: e.acceleration.y || 0,
+                        z: e.acceleration.z || 0
+                    };
+                }
+            });
+        }
     },
     
     setupEventListeners() {
@@ -143,9 +191,9 @@ const App = {
             // Set canvas dimensions
             this.overlay.width = window.innerWidth;
             this.overlay.height = window.innerHeight;
-            // Use smaller capture size for faster Gemini processing (4x faster!)
-            this.capture.width = 640;  // Reduced resolution
-            this.capture.height = 480; // 4:3 aspect ratio
+            // Use smaller capture size for faster Gemini processing (8x faster!)
+            this.capture.width = 512;  // Even smaller for speed
+            this.capture.height = 384; // 4:3 aspect ratio
             
             this.updateCameraStatus(true);
             console.log('Camera access granted');
@@ -237,10 +285,10 @@ const App = {
                 this.capture.height
             );
             
-            // Convert to blob with compression (lower quality = faster processing)
+            // Convert to blob with compression (lower quality = much faster processing)
             this.capture.toBlob((blob) => {
                 resolve(blob);
-            }, 'image/webp', 0.5); // 50% quality for faster upload & Gemini processing
+            }, 'image/webp', 0.4); // 40% quality for maximum speed
         });
     },
     
@@ -320,14 +368,23 @@ const App = {
         const ctx = this.overlay.getContext('2d');
         ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
         
-        // Draw ALL tracked objects (including ones not in current detection)
-        // This makes labels stick in 3D space!
+        // Draw ALL tracked objects with camera motion compensation
+        // This makes labels stick in 3D space like Google Lens!
         this.trackedObjects.forEach(trackedObj => {
+            // Apply camera motion compensation
+            let displayBbox = trackedObj.smoothedBbox;
+            
+            // If object not detected recently, use predicted position
+            if (trackedObj.missedFrames > 0) {
+                displayBbox = trackedObj.predictedBbox || trackedObj.smoothedBbox;
+            }
+            
             const detection = {
                 label: trackedObj.label,
-                bbox: trackedObj.smoothedBbox, // Use smoothed position
+                bbox: displayBbox,
                 color: trackedObj.color,
-                confidence: trackedObj.confidence
+                confidence: trackedObj.confidence,
+                isTracked: trackedObj.missedFrames > 0 // Visual indicator
             };
             this.drawDetection(ctx, detection);
         });
@@ -348,75 +405,136 @@ const App = {
     },
     
     /**
-     * Update tracked objects with new detections
-     * Implements AR-style object persistence and smoothing
+     * Update tracked objects with advanced AR tracking (Google Lens style)
+     * Includes motion prediction, camera compensation, and persistent tracking
      */
     updateTrackedObjects(detections, currentTime) {
-        // Mark all tracked objects as not matched this frame
-        this.trackedObjects.forEach(obj => obj.matched = false);
+        // STEP 1: Predict positions of existing objects (Kalman-like prediction)
+        this.trackedObjects.forEach(obj => {
+            obj.matched = false;
+            obj.missedFrames = (obj.missedFrames || 0) + 1;
+            
+            // Predict next position using velocity + camera motion
+            if (obj.velocity && obj.missedFrames <= this.maxMissedFrames) {
+                obj.predictedBbox = [
+                    obj.smoothedBbox[0] + obj.velocity[0] - this.cameraMotion.dx,
+                    obj.smoothedBbox[1] + obj.velocity[1] - this.cameraMotion.dy,
+                    obj.smoothedBbox[2] + obj.velocity[2] * 0.5, // Slow growth
+                    obj.smoothedBbox[3] + obj.velocity[3] * 0.5
+                ];
+            } else {
+                obj.predictedBbox = obj.smoothedBbox;
+            }
+        });
         
-        // Try to match each new detection to existing tracked objects
+        // STEP 2: Match new detections to existing tracked objects
+        const unmatchedDetections = [];
+        
         detections.forEach(detection => {
-            // Skip low confidence detections
+            // Skip very low confidence
             if (detection.confidence < this.minConfidence) return;
             
             let bestMatch = null;
-            let bestIoU = 0;
+            let bestScore = 0;
             
-            // Find best matching tracked object using IoU (Intersection over Union)
+            // Find best match using multiple criteria
             this.trackedObjects.forEach(trackedObj => {
-                if (trackedObj.matched) return; // Already matched
-                if (trackedObj.label !== detection.label) return; // Different type
+                if (trackedObj.matched) return;
+                if (trackedObj.label !== detection.label) return;
                 
-                const iou = this.calculateIoU(detection.bbox, trackedObj.bbox);
-                if (iou > this.trackingThreshold && iou > bestIoU) {
+                // Calculate IoU with predicted position (better for moving objects)
+                const iouPredicted = this.calculateIoU(detection.bbox, trackedObj.predictedBbox);
+                const iouCurrent = this.calculateIoU(detection.bbox, trackedObj.smoothedBbox);
+                const iou = Math.max(iouPredicted, iouCurrent);
+                
+                // Calculate center distance (helps with fast-moving objects)
+                const centerDist = this.calculateCenterDistance(detection.bbox, trackedObj.smoothedBbox);
+                
+                // Combined matching score
+                const score = iou * 0.7 + (1 / (1 + centerDist)) * 0.3;
+                
+                if (score > bestScore && (iou > this.trackingThreshold || centerDist < 0.3)) {
                     bestMatch = trackedObj;
-                    bestIoU = iou;
+                    bestScore = score;
                 }
             });
             
             if (bestMatch) {
-                // Update existing tracked object - KEEP IT ALIVE!
+                // UPDATE existing tracked object
                 bestMatch.matched = true;
+                bestMatch.missedFrames = 0;
                 bestMatch.lastSeen = currentTime;
                 bestMatch.confidence = detection.confidence;
                 
-                // Calculate velocity for motion prediction
-                bestMatch.velocity = this.calculateVelocity(bestMatch.bbox, detection.bbox);
-                bestMatch.bbox = detection.bbox; // Update raw position
+                // Calculate velocity with decay
+                const newVelocity = this.calculateVelocity(bestMatch.bbox, detection.bbox);
+                bestMatch.velocity = [
+                    bestMatch.velocity[0] * 0.7 + newVelocity[0] * 0.3,
+                    bestMatch.velocity[1] * 0.7 + newVelocity[1] * 0.3,
+                    bestMatch.velocity[2] * 0.7 + newVelocity[2] * 0.3,
+                    bestMatch.velocity[3] * 0.7 + newVelocity[3] * 0.3
+                ];
                 
-                // Apply exponential smoothing for stable, stuck labels
+                bestMatch.bbox = detection.bbox;
+                
+                // Adaptive smoothing (more responsive when moving fast)
+                const velocityMagnitude = Math.sqrt(
+                    newVelocity[0]**2 + newVelocity[1]**2
+                );
+                const adaptiveSmoothingFactor = Math.min(
+                    this.smoothingFactor + velocityMagnitude * 2,
+                    0.6
+                );
+                
                 bestMatch.smoothedBbox = this.smoothBoundingBox(
                     bestMatch.smoothedBbox,
                     detection.bbox,
-                    this.smoothingFactor
+                    adaptiveSmoothingFactor
                 );
             } else {
-                // Create new tracked object - STICK IT IN 3D SPACE!
-                const id = this.nextObjectId++;
-                this.trackedObjects.set(id, {
-                    id: id,
-                    label: detection.label,
-                    bbox: detection.bbox,
-                    smoothedBbox: detection.bbox, // Start at detected position
-                    color: detection.color,
-                    confidence: detection.confidence,
-                    lastSeen: currentTime,
-                    velocity: [0, 0, 0, 0],
-                    matched: true
-                });
+                unmatchedDetections.push(detection);
             }
         });
         
-        // Remove stale objects (not seen for maxTrackingAge)
-        // This keeps labels visible even when temporarily not detected!
+        // STEP 3: Create new tracked objects for unmatched detections
+        unmatchedDetections.forEach(detection => {
+            const id = this.nextObjectId++;
+            this.trackedObjects.set(id, {
+                id: id,
+                label: detection.label,
+                bbox: detection.bbox,
+                smoothedBbox: detection.bbox,
+                predictedBbox: detection.bbox,
+                color: detection.color,
+                confidence: detection.confidence,
+                lastSeen: currentTime,
+                velocity: [0, 0, 0, 0],
+                missedFrames: 0,
+                matched: true
+            });
+        });
+        
+        // STEP 4: Remove very stale objects
         const idsToRemove = [];
         this.trackedObjects.forEach((obj, id) => {
-            if (currentTime - obj.lastSeen > this.maxTrackingAge) {
+            const age = currentTime - obj.lastSeen;
+            if (age > this.maxTrackingAge || obj.missedFrames > this.maxMissedFrames) {
                 idsToRemove.push(id);
             }
         });
         idsToRemove.forEach(id => this.trackedObjects.delete(id));
+    },
+    
+    /**
+     * Calculate distance between bounding box centers
+     */
+    calculateCenterDistance(bbox1, bbox2) {
+        const cx1 = bbox1[0] + bbox1[2] / 2;
+        const cy1 = bbox1[1] + bbox1[3] / 2;
+        const cx2 = bbox2[0] + bbox2[2] / 2;
+        const cy2 = bbox2[1] + bbox2[3] / 2;
+        
+        return Math.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2);
     },
     
     /**
@@ -483,21 +601,66 @@ const App = {
         const width = w * this.overlay.width;
         const height = h * this.overlay.height;
         
-        // Draw bounding box
         const color = this.getColorForLabel(detection.color);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.setLineDash([]);
-        ctx.strokeRect(xCoord, yCoord, width, height);
         
-        // Draw label background
+        // Different visual style for tracked (predicted) vs detected objects
+        if (detection.isTracked) {
+            // Tracked object (not currently detected) - dashed line, slightly transparent
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.6;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 5]);
+        } else {
+            // Actively detected object - solid line, full opacity
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.9;
+            ctx.lineWidth = 3;
+            ctx.setLineDash([]);
+            
+            // Add glow effect for active detections
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 10;
+        }
+        
+        ctx.strokeRect(xCoord, yCoord, width, height);
+        ctx.shadowBlur = 0; // Reset shadow
+        
+        // Draw label with rounded corners (Google Lens style)
+        ctx.globalAlpha = 0.85;
         ctx.fillStyle = color;
-        ctx.fillRect(xCoord, yCoord - 25, width, 25);
+        const labelHeight = 28;
+        const labelY = yCoord - labelHeight - 5;
+        
+        // Rounded rectangle for label
+        this.roundRect(ctx, xCoord, labelY, Math.max(width, 100), labelHeight, 5);
+        ctx.fill();
         
         // Draw label text
+        ctx.globalAlpha = 1.0;
         ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText(detection.label, xCoord + 5, yCoord - 8);
+        ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(detection.label, xCoord + 8, labelY + labelHeight / 2);
+        
+        // Reset global alpha
+        ctx.globalAlpha = 1.0;
+    },
+    
+    /**
+     * Draw rounded rectangle helper
+     */
+    roundRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + width - radius, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+        ctx.lineTo(x + width, y + height - radius);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+        ctx.lineTo(x + radius, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
     },
     
     /**
