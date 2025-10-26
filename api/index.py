@@ -202,7 +202,10 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response_data).encode())
             
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             logger.error(f"Error processing request: {e}")
+            logger.error(f"Full traceback: {error_details}")
             self.send_error(500, str(e))
     
     def do_OPTIONS(self):
