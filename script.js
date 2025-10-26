@@ -808,7 +808,7 @@ const App = {
      * Announce newly locked objects (called once per object when it stabilizes)
      */
     announceLockedObjects(lockedObjects) {
-        if (!this.speechSynth || lockedObjects.length === 0) return;
+        if (!this.config.enableVoice || lockedObjects.length === 0) return;
         
         // Announce up to 3 objects at once (to avoid long announcements)
         const objectsToAnnounce = lockedObjects.slice(0, 3);
@@ -825,32 +825,82 @@ const App = {
             message = labels.join(', ');
         }
         
-        // Cancel any ongoing speech
-        this.speechSynth.cancel();
+        // Try multiple audio methods
+        this.speakMessage(message);
         
-        const utterance = new SpeechSynthesisUtterance(message);
-        utterance.rate = 0.9;
-        utterance.pitch = 1.0;
-        utterance.volume = 0.9;
-        
-        this.speechSynth.speak(utterance);
+        // Vibrate for haptic feedback (if supported)
+        if ('vibrate' in navigator) {
+            navigator.vibrate([200, 100, 200]); // Pattern: vibrate, pause, vibrate
+        }
         
         // Mark objects as announced
         objectsToAnnounce.forEach(obj => {
             obj.audioAnnounced = true;
         });
         
-        // Update audio status
-        this.showAudioStatus(message);
-        
-        console.log(`Announced: ${message}`);
+        console.log(`🔊 Announced: ${message}`);
     },
     
     /**
-     * Generate audio feedback using Web Speech API
+     * Speak a message using the best available method
+     * Tries: Web Speech API -> Browser Notification -> Console only
+     */
+    speakMessage(message) {
+        // Method 1: Web Speech API (preferred)
+        if (this.speechSynth) {
+            try {
+                this.speechSynth.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(message);
+                utterance.rate = 0.9;
+                utterance.pitch = 1.0;
+                utterance.volume = 0.9;
+                utterance.lang = 'en-US';
+                
+                utterance.onerror = (e) => {
+                    console.error('Speech synthesis error:', e);
+                    this.fallbackNotification(message);
+                };
+                
+                this.speechSynth.speak(utterance);
+                return;
+            } catch (error) {
+                console.error('Speech API failed:', error);
+            }
+        }
+        
+        // Method 2: Browser Notification (fallback)
+        this.fallbackNotification(message);
+    },
+    
+    /**
+     * Fallback notification method
+     */
+    fallbackNotification(message) {
+        // Try browser notifications if permitted
+        if ('Notification' in window && Notification.permission === 'granted') {
+            try {
+                new Notification('SignVision Detection', {
+                    body: message,
+                    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="70">🚦</text></svg>',
+                    silent: false
+                });
+            } catch (error) {
+                console.warn('Notification failed:', error);
+            }
+        }
+        
+        // Always log to console
+        console.log(`🔊 ${message}`);
+    },
+    
+    /**
+     * Generate audio feedback using Web Speech API (legacy - kept for compatibility)
      */
     generateAudioFeedback(detections) {
-        if (!this.speechSynth) return;
+        // This function is now mostly handled by announceLockedObjects
+        // Only kept for urgent warnings
+        if (!this.config.enableVoice) return;
         
         // Only speak for important/high priority detections
         const importantDetections = detections.filter(d => {
@@ -860,21 +910,9 @@ const App = {
         });
         
         if (importantDetections.length > 0) {
-            const detection = importantDetections[0]; // Priority detection
+            const detection = importantDetections[0];
             const message = this.getFeedbackMessage(detection.label);
-            
-            // Cancel any ongoing speech
-            this.speechSynth.cancel();
-            
-            const utterance = new SpeechSynthesisUtterance(message);
-            utterance.rate = 0.9;
-            utterance.pitch = 1.0;
-            utterance.volume = 0.8;
-            
-            this.speechSynth.speak(utterance);
-            
-            // Update audio status
-            this.showAudioStatus(message);
+            this.speakMessage(message);
         }
     },
     
