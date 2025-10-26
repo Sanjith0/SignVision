@@ -239,15 +239,26 @@ const App = {
      * Send frame to backend API for AI analysis
      */
     async processFrame(blob) {
-        const formData = new FormData();
-        formData.append('file', blob, 'frame.webp');
-        
         try {
             this.updateConnectionStatus(false);
             
+            // Convert blob to base64 for simpler parsing on Vercel
+            const reader = new FileReader();
+            const base64Promise = new Promise((resolve) => {
+                reader.onloadend = () => resolve(reader.result);
+                reader.readAsDataURL(blob);
+            });
+            const base64 = await base64Promise;
+            
             const response = await fetch(this.config.apiEndpoint, {
                 method: 'POST',
-                body: formData
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    image: base64.split(',')[1], // Remove data:image/webp;base64, prefix
+                    content_type: blob.type || 'image/webp'
+                })
             });
             
             if (!response.ok) {
