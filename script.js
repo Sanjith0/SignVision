@@ -420,6 +420,8 @@ const App = {
         
         // Draw ALL tracked objects with camera motion compensation
         // This makes labels stick in 3D space like Google Lens!
+        const newlyLockedObjects = [];
+        
         this.trackedObjects.forEach(trackedObj => {
             // Apply camera motion compensation
             let displayBbox = trackedObj.smoothedBbox;
@@ -437,11 +439,16 @@ const App = {
                 isTracked: trackedObj.missedFrames > 0 // Visual indicator
             };
             this.drawDetection(ctx, detection);
+            
+            // Collect newly locked objects for audio announcement
+            if (trackedObj.labelLocked && !trackedObj.audioAnnounced) {
+                newlyLockedObjects.push(trackedObj);
+            }
         });
         
-        // Generate audio feedback only for NEW detections
-        if (this.config.enableVoice && detections.length > 0) {
-            this.generateAudioFeedback(detections);
+        // Generate audio feedback for newly locked objects
+        if (this.config.enableVoice && newlyLockedObjects.length > 0) {
+            this.announceLockedObjects(newlyLockedObjects);
         }
         
         // Update detection panel with all tracked objects
@@ -566,6 +573,7 @@ const App = {
                     bestMatch.consistentDetections = (bestMatch.consistentDetections || 0) + 1;
                     if (bestMatch.consistentDetections >= 2) {
                         bestMatch.labelLocked = true;
+                        bestMatch.audioAnnounced = false; // Mark for audio announcement
                         console.log(`Label locked: ${bestMatch.label}`);
                     }
                 } else {
@@ -620,7 +628,8 @@ const App = {
                 missedFrames: 0,
                 matched: true,
                 consistentDetections: 1, // Start counting for label locking
-                labelLocked: false // Label not locked yet
+                labelLocked: false, // Label not locked yet
+                audioAnnounced: false // Not yet announced via audio
             });
         });
         
@@ -796,6 +805,48 @@ const App = {
     },
     
     /**
+     * Announce newly locked objects (called once per object when it stabilizes)
+     */
+    announceLockedObjects(lockedObjects) {
+        if (!this.speechSynth || lockedObjects.length === 0) return;
+        
+        // Announce up to 3 objects at once (to avoid long announcements)
+        const objectsToAnnounce = lockedObjects.slice(0, 3);
+        
+        // Build announcement message
+        const labels = objectsToAnnounce.map(obj => this.getFeedbackMessage(obj.label));
+        let message;
+        
+        if (labels.length === 1) {
+            message = labels[0];
+        } else if (labels.length === 2) {
+            message = `${labels[0]} and ${labels[1]}`;
+        } else {
+            message = labels.join(', ');
+        }
+        
+        // Cancel any ongoing speech
+        this.speechSynth.cancel();
+        
+        const utterance = new SpeechSynthesisUtterance(message);
+        utterance.rate = 0.9;
+        utterance.pitch = 1.0;
+        utterance.volume = 0.9;
+        
+        this.speechSynth.speak(utterance);
+        
+        // Mark objects as announced
+        objectsToAnnounce.forEach(obj => {
+            obj.audioAnnounced = true;
+        });
+        
+        // Update audio status
+        this.showAudioStatus(message);
+        
+        console.log(`Announced: ${message}`);
+    },
+    
+    /**
      * Generate audio feedback using Web Speech API
      */
     generateAudioFeedback(detections) {
@@ -832,23 +883,60 @@ const App = {
      */
     getFeedbackMessage(label) {
         const messages = {
-            'stop_sign': 'Stop sign detected ahead. Stop.',
-            'no_walk': 'Do not walk signal. Stay on curb.',
-            'crosswalk': 'Crosswalk detected. Proceed with caution.',
-            'walk': 'Walk signal. Safe to cross.',
-            'hazard': 'Hazard detected. Caution advised.',
-            'traffic_light_red': 'Red light. Stop.',
-            'speed_limit': 'Speed limit sign detected.',
+            // Pedestrian signals
+            'pedestrian_signal': 'Pedestrian crossing sign detected',
+            'walk_sign': 'Walk signal detected',
+            'no_walk': 'Do not walk signal',
+            
+            // Crosswalks
+            'crosswalk': 'Crosswalk ahead',
+            
+            // Stop signs
+            'stop_sign': 'Stop sign ahead',
+            'stop': 'Stop sign ahead',
+            
+            // Traffic lights
+            'traffic_light': 'Traffic light detected',
+            'traffic_light_red': 'Red light',
+            'traffic_light_green': 'Green light',
+            'traffic_light_yellow': 'Yellow light',
+            
+            // Hazards
+            'hazard': 'Hazard detected',
+            'obstacle': 'Obstacle ahead',
+            'danger': 'Danger warning',
+            
+            // Speed limits
+            'speed_limit': 'Speed limit sign',
+            
+            // Yield
+            'yield': 'Yield sign ahead',
+            'yield_sign': 'Yield sign ahead',
+            
+            // One way
+            'one_way': 'One way street',
+            
+            // Road signs
+            'road_sign': 'Road sign detected',
+            'warning_sign': 'Warning sign detected'
         };
         
         const lowerLabel = label.toLowerCase();
+        
+        // Check exact match first
+        if (messages[lowerLabel]) {
+            return messages[lowerLabel];
+        }
+        
+        // Check if any key is contained in the label
         for (const key in messages) {
             if (lowerLabel.includes(key) || lowerLabel.includes(key.replace('_', ' '))) {
                 return messages[key];
             }
         }
         
-        return `${label.replace(/_/g, ' ')} detected.`;
+        // Default: convert underscores to spaces and capitalize
+        return label.replace(/_/g, ' ') + ' detected';
     },
     
     /**
