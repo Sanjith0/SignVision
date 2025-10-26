@@ -28,7 +28,7 @@ const App = {
             // Otherwise, use relative URL (same server in production)
             return '/analyze';
         })(),
-        processingInterval: 1000, // ms between frame captures
+        processingInterval: 300, // ms between frame captures (faster detection - 3.3 FPS)
         enableVoice: true,
         detectionSensitivity: 5,
         maxFPS: 15,
@@ -48,6 +48,14 @@ const App = {
     // Detection history
     lastDetections: [],
     deviceMotionData: null,
+    
+    // AR Object Tracking - labels stick to objects in 3D space
+    trackedObjects: new Map(), // Map<id, {id, label, bbox, smoothedBbox, color, confidence, lastSeen, velocity}>
+    nextObjectId: 0,
+    trackingThreshold: 0.25, // IoU threshold for matching (lower = more lenient)
+    smoothingFactor: 0.35, // Position smoothing (0.1 = very smooth, 0.5 = responsive)
+    maxTrackingAge: 1000, // Keep objects visible for 1 second without detection
+    minConfidence: 0.3, // Minimum confidence to create new tracked object
     
     // Service references
     storage: null,
@@ -135,8 +143,9 @@ const App = {
             // Set canvas dimensions
             this.overlay.width = window.innerWidth;
             this.overlay.height = window.innerHeight;
-            this.capture.width = window.innerWidth;
-            this.capture.height = window.innerHeight;
+            // Use smaller capture size for faster Gemini processing (4x faster!)
+            this.capture.width = 640;  // Reduced resolution
+            this.capture.height = 480; // 4:3 aspect ratio
             
             this.updateCameraStatus(true);
             console.log('Camera access granted');
@@ -228,10 +237,10 @@ const App = {
                 this.capture.height
             );
             
-            // Convert to blob with compression
+            // Convert to blob with compression (lower quality = faster processing)
             this.capture.toBlob((blob) => {
                 resolve(blob);
-            }, 'image/webp', 0.6); // 60% quality for faster upload
+            }, 'image/webp', 0.5); // 50% quality for faster upload & Gemini processing
         });
     },
     
@@ -295,10 +304,15 @@ const App = {
     },
     
     /**
-     * Handle detection results - draw overlays and provide audio feedback
+     * Handle detection results with AR tracking
+     * Labels stick to objects in 3D space like traditional AR
      */
     handleDetections(detections) {
         this.lastDetections = detections;
+        const currentTime = Date.now();
+        
+        // Update tracked objects with new detections
+        this.updateTrackedObjects(detections, currentTime);
         
         // Clear previous overlay
         this.clearOverlay();
@@ -306,18 +320,155 @@ const App = {
         const ctx = this.overlay.getContext('2d');
         ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
         
-        // Draw each detection
-        detections.forEach(detection => {
+        // Draw ALL tracked objects (including ones not in current detection)
+        // This makes labels stick in 3D space!
+        this.trackedObjects.forEach(trackedObj => {
+            const detection = {
+                label: trackedObj.label,
+                bbox: trackedObj.smoothedBbox, // Use smoothed position
+                color: trackedObj.color,
+                confidence: trackedObj.confidence
+            };
             this.drawDetection(ctx, detection);
         });
         
-        // Generate audio feedback for important detections
+        // Generate audio feedback only for NEW detections
         if (this.config.enableVoice && detections.length > 0) {
             this.generateAudioFeedback(detections);
         }
         
-        // Update detection panel
-        this.updateDetectionPanel(detections);
+        // Update detection panel with all tracked objects
+        const displayDetections = Array.from(this.trackedObjects.values()).map(obj => ({
+            label: obj.label,
+            bbox: obj.smoothedBbox,
+            color: obj.color,
+            confidence: obj.confidence
+        }));
+        this.updateDetectionPanel(displayDetections);
+    },
+    
+    /**
+     * Update tracked objects with new detections
+     * Implements AR-style object persistence and smoothing
+     */
+    updateTrackedObjects(detections, currentTime) {
+        // Mark all tracked objects as not matched this frame
+        this.trackedObjects.forEach(obj => obj.matched = false);
+        
+        // Try to match each new detection to existing tracked objects
+        detections.forEach(detection => {
+            // Skip low confidence detections
+            if (detection.confidence < this.minConfidence) return;
+            
+            let bestMatch = null;
+            let bestIoU = 0;
+            
+            // Find best matching tracked object using IoU (Intersection over Union)
+            this.trackedObjects.forEach(trackedObj => {
+                if (trackedObj.matched) return; // Already matched
+                if (trackedObj.label !== detection.label) return; // Different type
+                
+                const iou = this.calculateIoU(detection.bbox, trackedObj.bbox);
+                if (iou > this.trackingThreshold && iou > bestIoU) {
+                    bestMatch = trackedObj;
+                    bestIoU = iou;
+                }
+            });
+            
+            if (bestMatch) {
+                // Update existing tracked object - KEEP IT ALIVE!
+                bestMatch.matched = true;
+                bestMatch.lastSeen = currentTime;
+                bestMatch.confidence = detection.confidence;
+                
+                // Calculate velocity for motion prediction
+                bestMatch.velocity = this.calculateVelocity(bestMatch.bbox, detection.bbox);
+                bestMatch.bbox = detection.bbox; // Update raw position
+                
+                // Apply exponential smoothing for stable, stuck labels
+                bestMatch.smoothedBbox = this.smoothBoundingBox(
+                    bestMatch.smoothedBbox,
+                    detection.bbox,
+                    this.smoothingFactor
+                );
+            } else {
+                // Create new tracked object - STICK IT IN 3D SPACE!
+                const id = this.nextObjectId++;
+                this.trackedObjects.set(id, {
+                    id: id,
+                    label: detection.label,
+                    bbox: detection.bbox,
+                    smoothedBbox: detection.bbox, // Start at detected position
+                    color: detection.color,
+                    confidence: detection.confidence,
+                    lastSeen: currentTime,
+                    velocity: [0, 0, 0, 0],
+                    matched: true
+                });
+            }
+        });
+        
+        // Remove stale objects (not seen for maxTrackingAge)
+        // This keeps labels visible even when temporarily not detected!
+        const idsToRemove = [];
+        this.trackedObjects.forEach((obj, id) => {
+            if (currentTime - obj.lastSeen > this.maxTrackingAge) {
+                idsToRemove.push(id);
+            }
+        });
+        idsToRemove.forEach(id => this.trackedObjects.delete(id));
+    },
+    
+    /**
+     * Calculate Intersection over Union for object matching
+     */
+    calculateIoU(bbox1, bbox2) {
+        const [x1, y1, w1, h1] = bbox1;
+        const [x2, y2, w2, h2] = bbox2;
+        
+        // Calculate intersection rectangle
+        const xLeft = Math.max(x1, x2);
+        const yTop = Math.max(y1, y2);
+        const xRight = Math.min(x1 + w1, x2 + w2);
+        const yBottom = Math.min(y1 + h1, y2 + h2);
+        
+        if (xRight < xLeft || yBottom < yTop) {
+            return 0; // No overlap
+        }
+        
+        const intersectionArea = (xRight - xLeft) * (yBottom - yTop);
+        const bbox1Area = w1 * h1;
+        const bbox2Area = w2 * h2;
+        const unionArea = bbox1Area + bbox2Area - intersectionArea;
+        
+        return intersectionArea / unionArea;
+    },
+    
+    /**
+     * Calculate velocity for motion prediction
+     */
+    calculateVelocity(oldBbox, newBbox) {
+        return [
+            newBbox[0] - oldBbox[0],
+            newBbox[1] - oldBbox[1],
+            newBbox[2] - oldBbox[2],
+            newBbox[3] - oldBbox[3]
+        ];
+    },
+    
+    /**
+     * Smooth bounding box using exponential moving average
+     * Makes labels stick smoothly to objects
+     */
+    smoothBoundingBox(oldBbox, newBbox, alpha) {
+        if (!oldBbox) return newBbox;
+        
+        return [
+            oldBbox[0] * (1 - alpha) + newBbox[0] * alpha, // x
+            oldBbox[1] * (1 - alpha) + newBbox[1] * alpha, // y
+            oldBbox[2] * (1 - alpha) + newBbox[2] * alpha, // w
+            oldBbox[3] * (1 - alpha) + newBbox[3] * alpha  // h
+        ];
     },
     
     /**
